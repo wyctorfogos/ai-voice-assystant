@@ -4,6 +4,7 @@ from pynput import keyboard
 import threading
 import time
 from faster_whisper import WhisperModel
+from models.agent import OllamaClient
 
 # ===============================
 # CONFIG
@@ -15,7 +16,7 @@ DTYPE = "int16"
 CHUNK_SECONDS = 5.0
 CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_SECONDS)
 
-model_size = "small"
+model_size = "turbo"
 device = "cuda"
 
 whisper_model = WhisperModel(
@@ -24,6 +25,7 @@ whisper_model = WhisperModel(
     compute_type="float16"
 )
 
+llm_chatbot = OllamaClient()
 # ===============================
 # CONTROLE
 # ===============================
@@ -46,21 +48,25 @@ def audio_callback(indata, frames, time_info, status):
 # ===============================
 def transcription_loop():
     global last_printed_text
+    history = []
 
     while not stop_event.is_set():
         time.sleep(0.1)
 
-        # pega snapshot do buffer com lock
+        # snapshot do buffer
         with lock:
             if not audio_queue:
                 continue
+
             audio_np = np.concatenate(audio_queue, axis=0)
 
-            # ainda não atingiu o tamanho mínimo
             if len(audio_np) < CHUNK_SAMPLES:
                 continue
-        
-        # fora do lock: processamento pesado
+
+            # limpa buffer corretamente
+            audio_queue.clear()
+
+        # processamento pesado fora do lock
         audio_float = (audio_np.astype(np.float32) / 32768.0).squeeze()
 
         segments, _ = whisper_model.transcribe(
@@ -71,11 +77,32 @@ def transcription_loop():
 
         text = " ".join(s.text for s in segments).strip()
 
-        if text and text != last_printed_text:
-            print("🗣️", text)
-            last_printed_text = text
+        if not text or text == last_printed_text:
+            continue
+
+        print("🗣️ Você:", text)
+        last_printed_text = text
+
+        # adiciona mensagem do usuário
+        history.append({
+            "role": "user",
+            "content": text
+        })
+
+        # chama o LLM
+        llm_response = llm_chatbot.chat(messages=history)
+
+        print("🤖 Bot:", llm_response)
+
+        # adiciona resposta do assistente
+        history.append({
+            "role": "assistant",
+            "content": llm_response
+        })
+
         # limpa o buffer compartilhado
         audio_queue.clear()
+        audio_np = 0
 # ===============================
 # TECLADO
 # ===============================
